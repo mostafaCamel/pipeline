@@ -27,6 +27,7 @@ import (
 	pod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	runv1beta1 "github.com/tektoncd/pipeline/pkg/apis/run/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -419,6 +420,8 @@ const (
 	PipelineRunReasonCELEvaluationFailed PipelineRunReason = "CELEvaluationFailed"
 	// PipelineRunReasonInvalidParamValue indicates that the PipelineRun Param input value is not allowed.
 	PipelineRunReasonInvalidParamValue PipelineRunReason = "InvalidParamValue"
+	// PipelineRunReasonFetchingValueSourceFailed indicates a failure at fetching a value source
+	PipelineRunReasonFetchingValueSourceFailed PipelineRunReason = "FetchingValueSourceFailed"
 )
 
 // PipelineTaskOnErrorAnnotation is used to pass the failure strategy to TaskRun pods from PipelineTask OnError field
@@ -681,4 +684,21 @@ type PipelineTaskRunTemplate struct {
 	PodTemplate *pod.PodTemplate `json:"podTemplate,omitempty"`
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+}
+
+func (baseline *PipelineRunSpec) isDifferentFromDesiredStateOnlyByValueSourceResolutionInParams(new *PipelineRunSpec) bool {
+	if baseline == nil || new == nil {
+		return false
+	}
+	baselineCopy := baseline.DeepCopy()
+	newCopy := new.DeepCopy()
+
+	emptyParams := Params{}
+	baselineCopy.Params = emptyParams
+	newCopy.Params = emptyParams
+	if !equality.Semantic.DeepEqual(baselineCopy, newCopy) {
+		return false
+	}
+
+	return IsDifferentOnlyByValueSourceResolution(new.Params, baseline.Params)
 }

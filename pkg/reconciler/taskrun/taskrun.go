@@ -18,6 +18,7 @@ package taskrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -58,10 +59,12 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	jsonpatch "gomodules.xyz/jsonpatch/v2"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	corev1Listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/utils/clock"
@@ -224,6 +227,14 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, tr *v1.TaskRun) pkgrecon
 	// Emit events (only when ConditionSucceeded was changed)
 	if err = c.finishReconcileUpdateEmitEvents(ctx, tr, before, err); err != nil {
 		return err
+	}
+
+	// This feature flag guard is only for performance. Otherwise, a new trace
+	// will be created needlessly
+	if config.FromContextOrDefaults(ctx).FeatureFlags.EnableValueFromInParam {
+		if _, err = c.patchTaskRunIfValueSourceResolved(ctx, tr); err != nil {
+			return err
+		}
 	}
 
 	if tr.Status.StartTime != nil {
@@ -564,6 +575,13 @@ func (c *Reconciler) prepare(ctx context.Context, tr *v1.TaskRun) (*v1.TaskSpec,
 		return nil, nil, controller.NewPermanentError(err)
 	}
 
+	if err := resources.ValidateAndResolveValueSourceInParams(ctx, c.KubeClientSet, tr.Namespace, &tr.Spec.Params); err != nil {
+		logger.Errorf("TaskRun %s/%s can't be Run; it has failed fetching value sources for one of the paramaters: %s",
+			tr.Namespace, tr.Name, err)
+		tr.Status.MarkResourceFailed(v1.TaskRunReasonFetchingValueSourceFailed, err)
+		return nil, nil, controller.NewPermanentError(err)
+	}
+
 	return taskSpec, rtr, nil
 }
 
@@ -717,6 +735,32 @@ func (c *Reconciler) updateTaskRunWithDefaultWorkspaces(ctx context.Context, tr 
 		}
 	}
 	return nil
+}
+
+func (c *Reconciler) patchTaskRunIfValueSourceResolved(ctx context.Context, tr *v1.TaskRun) (*v1.TaskRun, error) {
+	ctx, span := c.tracerProvider.Tracer(TracerName).Start(ctx, "patchPipelineRunIfValueSourceResolved")
+	defer span.End()
+	baselineTr, err := c.taskRunLister.TaskRuns(tr.Namespace).Get(tr.Name)
+	if err != nil {
+		return nil, fmt.Errorf("error getting TaskRun %s when patching TaskRun after value source resolution: %w", tr.Name, err)
+	}
+	if v1.IsDifferentOnlyByValueSourceResolution(tr.Spec.Params, baselineTr.Spec.Params) {
+		// Patch is needed because TaskRunSpecs are outside Status of TaskRun so we want to be surgical
+		// about the change.
+		// The method *TaskRunSpec.ValidateUpdate guards against other updates/patches once TaskRun has started
+		patchParamBytes, err := json.Marshal([]jsonpatch.JsonPatchOperation{
+			{
+				Operation: "replace",
+				Path:      "/spec/params",
+				Value:     tr.Spec.Params,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal Params patch bytes: %v", err)
+		}
+		return c.PipelineClientSet.TektonV1().TaskRuns(tr.Namespace).Patch(ctx, tr.Name, types.JSONPatchType, patchParamBytes, metav1.PatchOptions{}, "")
+	}
+	return tr, nil
 }
 
 func (c *Reconciler) updateLabelsAndAnnotations(ctx context.Context, tr *v1.TaskRun) (*v1.TaskRun, error) {
