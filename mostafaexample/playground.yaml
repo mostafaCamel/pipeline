@@ -1,0 +1,28 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: valuefrom-in-param
+spec:
+  params:
+    - name: MESSAGE
+      valueFrom:
+        configMapKeyRef:
+          name: valuesource-config-map
+          key: myKey
+  pipelineSpec:
+    params:
+    - name: MESSAGE
+      type: string
+    tasks:
+      - name: echo-message
+        params:
+          - name: MESSAGE
+            value: $(params.MESSAGE)
+        taskSpec:
+          params:
+          - name: MESSAGE
+            type: string
+          steps:
+            - name: echo
+              image: mirror.gcr.io/ubuntu
+              script: echo $(params.MESSAGE)

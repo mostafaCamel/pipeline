@@ -1,0 +1,86 @@
+diff --git a/pkg/reconciler/taskrun/taskrun_test.go b/pkg/reconciler/taskrun/taskrun_test.go
+index 49e7ea16a..5a404675b 100644
+--- a/pkg/reconciler/taskrun/taskrun_test.go
++++ b/pkg/reconciler/taskrun/taskrun_test.go
+@@ -148,6 +148,19 @@ var (
+ 			Steps: []v1.Step{simpleStep},
+ 		},
+ 	}
++	simpleTaskWithParam = &v1.Task{
++		ObjectMeta: objectMeta("test-task-param", "foo"),
++		TypeMeta: metav1.TypeMeta{
++			APIVersion: "tekton.dev/v1",
++			Kind:       "Task",
++		},
++		Spec: v1.TaskSpec{
++			Params: []v1.ParamSpec{{
++				Name: "param1",
++			}},
++			Steps: []v1.Step{simpleStep},
++		},
++	}
+ 	simpleTaskWithParamEnum = &v1.Task{
+ 		ObjectMeta: objectMeta("test-task-param-enum", "foo"),
+ 		TypeMeta: metav1.TypeMeta{
+@@ -348,6 +361,13 @@ var (
+ 			EmptyDir: &corev1.EmptyDirVolumeSource{},
+ 		},
+ 	}
++
++	valueSourceConfigMap = corev1.ConfigMap{
++		ObjectMeta: metav1.ObjectMeta{Namespace: "foo", Name: "ValueSourceConfigMap"},
++		Data: map[string]string{
++			"aKey": "aValue",
++		},
++	}
+ )
+ 
+ const fakeVersion string = "unknown"
+@@ -7260,3 +7280,47 @@ status:
+ 		})
+ 	}
+ }
++
++func TestReconcileRun_PatchTaskRunIfValueSourceResolved(t *testing.T) {
++	cms := []*corev1.ConfigMap{
++		{
++			ObjectMeta: metav1.ObjectMeta{Namespace: system.Namespace(), Name: config.GetFeatureFlagsConfigName()},
++			Data: map[string]string{
++				"enable-valuefrom-in-param": "true",
++			},
++		},
++		&valueSourceConfigMap,
++	}
++
++	taskRunWithValueSource := parse.MustParseV1TaskRun(t, `
++metadata:
++  name: test-task-param-run-valuesource-patch
++  namespace: foo
++spec:
++  taskRef:
++    name: test-task-param
++  params:
++    - name: param1
++      valueFrom:
++        configMapKeyRef:
++          name: ValueSourceConfigMap
++          key: aKey
++`)
++	d := test.Data{
++		ConfigMaps: cms,
++		TaskRuns:   []*v1.TaskRun{taskRunWithValueSource},
++		Tasks:      []*v1.Task{simpleTaskWithParam},
++	}
++
++	testAssets, cancel := getTaskRunController(t, d)
++	defer cancel()
++	createServiceAccount(t, testAssets, taskRunWithValueSource.Spec.ServiceAccountName, taskRunWithValueSource.Namespace)
++	//testAssets.Ctx = apis.WithinCreate(testAssets.Ctx) // to be able to test "baseline not found" error
++
++	c := testAssets.Controller
++	//clients := testAssets.Clients
++
++	if err := c.Reconciler.Reconcile(testAssets.Ctx, getRunName(taskRunWithValueSource)); err == nil || !strings.Contains(err.Error(), "when patching TaskRun after value source resolution") {
++		t.Errorf("expected an error to contain 'dadada'. Instead Got error %v", err)
++	}
++}

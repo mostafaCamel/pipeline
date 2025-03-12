@@ -1,0 +1,143 @@
+https://github.com/tektoncd/pipeline/issues/1744
+closed https://github.com/tektoncd/pipeline/pull/5358 
+closed https://github.com/tektoncd/community/pull/868
+
+this is alreay supported within steps (only as an env , not for variable substituion) . (See docs/variables.md) We want it within Task as well
+PR was closed for unrelated reasosn. You can cherry-pick it then build upon it
+
+https://github.com/tektoncd/pipeline/blob/main/docs/developers/feature-versioning.md
+https://github.com/tektoncd/pipeline/blob/main/api_compatibility_policy.md#approving-api-changes
+[v1beta1] are deprecated. New features will not be added, but they will receive bug fixes.
+v1beta1.Task is a deprecated CRD but I rpobably need to create a new feature flag and have it as a beta fearute in the stable CRD (v1)
+
+
+make changes in the go packages then run the bash script hack/update-codegen.sh which will update the openapi_generated.go and swagger.json files for you
+pipeline-api.md is also generated automatically
+tasks.md is written manually
+
+if valueFrom is set, taskRun/taskSpec cannot set a value ... failure at application of taskrun
+If valueFrom is set, we can still have a default
+
+
+The value has to be resolved during taskrun (not task) so that every newly spun task (pod) gets the updated value
+Is it worth it to mirror the behavior of COnfoigMap/Pod in k8s so that the TaskRun obtains the updated value if the COnfigMap is updated after the initialization of the TaskRun?
+
+taskrun_validation param_conversion
+applyStepActionParameters
+
+error of non-existent configMap in task/task spec versus task run ?
+
+optional param? no error if configmap does not contain it?
+
+taskRef or taskSpec - Specifies the Tasks that the TaskRun will execute. taskSpec is the task-equivalent of anonymous functions
+
+overridable by taskRun?
+
+Example of a feature flag	// PipelineSpec is a specification of a pipeline
+	// Note: PipelineSpec is in preview mode and not yet supported
+	// Specifying PipelineSpec can be disabled by setting
+	// `disable-inline-spec` feature flag..
+
+ValidatePipelineTasks (both the implementation and the call) in pipeline_validation.go has a code-lilke validation if not exactly one of taskRef and taskSpec is defined
+We should have something similar for COnfigMapKeyRef and (eventually) SecretMapKeyRef in param_validation.go for validation of ParamFromSource (valueFrom)
+func (pt PipelineTask) Validate(ctx context.Context)
+
+for task_validation and pipeline_validation:
+- valueFrom fails if it exists and the flag is not active
+- valueFrom has  either COnfigMappKeyRef (or eventuallySecretKeyRef)
+ ... run manually to ensure name and key only and thir attirbute will fail normally
+
+
+During pipelinerun and taskrun initialization (check where param assignment is validated):
+- fail if configMap does not exist
+- fail if variable does not exist in configMap
+- fail if PipelineRun (or respectively TaskRun) has this value defined
+- assign the value from the configMap to the parameter
+
+
+export KO_DOCKER_REPO='docker.io/mostafaabdelwahab'
+
+
+No need to guard behind feature flag in pipelinerun validation or initialization
+
+
+value and ValueFrom in Param
+From a user api perspective, if the feature flag is enabled then exactly one or the other needs to be passed in the json
+If the feature flag is disabled, then only value can be passed to the json
+
+From a struct perspective, valueFrom will be similar to how it is described here  https://github.com/tektoncd/community/pull/868/files
+We will add a new bool fetchFromSource (default false) to the ParamValue struct
+If fetchFromSource is true then the ValueType must be StringVal .... in the future, we can add support for file-like keys in the ConfigMap <-> ParamTypeObject in ParamValue in Tekton
+You don't need to play with Marshall
+
+You set volumes at the Pod level, then mount them into containers inside that Pod
+
+https://stackoverflow.com/questions/59964619/difference-using-pointer-in-struct-fields
+
+func ApplyParameters apply.go -> ApplyReplacements
+logger := logging.FromContext(ctx)
+logger.Errorf("Failed dryRunValidation for PipelineRun %s: %w", pr.Name, err)
+
+roundtrip patching (unmarshal then marshal) then validation then applyparamaters then each of validation and applyparameters get called multiple times until piepline completion (validation in webhook and applyparameters in controller)
+the first validation occurs then the first apply occurs
+
+Roundtrip patching occurs in webhook
+When pipelinerun is created but fails with"CouldntGetPipeline" , webhook has 3 validation calls. Controller does not have any applyparameters call
+
+The reconciler is called in the controller
+
+omitzero (which requires go 1.24+) in Param.Value then a validation that either value or ValueFrom are defined can fix the issue
+Error from server (BadRequest): error when creating "mostafaexample/hello-goodbye-pipeline-run.yaml": admission webhook "webhook.pipeline.tekton.dev" denied the request: mutation failed: cannot create patch for round tripped newBytes: cannot marshal interface: json: error calling MarshalJSON for type v1.ParamValue: impossible ParamValues.Type: ""
+
+ftech the value from source before the ApplyParamters methods (specifically ApplyParametersToWorkspaceBindings) calls in the reconcile method in pipelinerun.go and taskrun.go
+Actually it is needed before ValidateParamTypesMatching
+
+c.Env[ie].ValueFrom.SecretKeyRef.LocalObjectReference.Name
+and
+c.Env[ie].ValueFrom.ConfigMapKeyRef.Key = substitution.ApplyReplacements(e.ValueFrom.ConfigMapKeyRef.Key, stringReplacements)
+
+
+"Failed to create pod due to config error" when using valueFrom in env in step with inexistent configmap
+The repo kubernetes/pkg/kubelet/kubelet_pods.go in the kubernetes project  -> func (kl *Kubelet) makeEnvironmentVariables
+It sets the environment variable for the container (corresponding to the steprun in tekton) based on the configmaps available in the pod's (corresponding to tekton taskrun) namespace
+https://github.com/kubernetes/kubernetes/blob/58704903c5f3616967ea9e71cb173d7a44868aa3/pkg/kubelet/kubelet_pods.go#L847
+There is no standalone api methods on COnfigMapKeySelector in k8s.io
+
+ConfigMapKeySelector is only applied at runtime : The tekton step creates a corev1.container and passes the the env to it
+https://kubernetes.io/blog/2021/08/06/server-side-apply-ga/
+Server-side Apply helps users and controllers manage their resources through declarative configurations. Server-side Apply replaces the client side apply feature implemented by “kubectl apply” with a server-side implementation, permitting use by tools/clients other than kubectl
+Each Apply function (from the client) takes an "applyconfiguration" type
+
+
+https://tekton.dev/docs/pipelines/variables/
+No substitution needed in PipelineRun.spec.params or TaskRun.spec.params so I don't think we should support substitution in (PipelineRun|TaskRun).spec.params[*].valueFrom
+TriggerTemplates have support for TriggerTemplace.resourcetemplates[*].spec.params[*] but TriggerTemplates are deprecated (available in v1beta1 but not v1)
+
+
+Given that all TaskRuns of the PipelineRun will be in the same namespace, no need to have access to check for the configmaps outside this namespace
+`k8s.CoreV1().ConfigMaps(pipelineRun.Namespace)` should be enough
+https://tekton.dev/docs/pipelines/tasks/#task-vs-clustertask
+ClusterTasks are deprecated so no need to add specific support for them (i.e. no expectation that the COnfigMap can be in a namespace other than pipelinerun's namespace)
+
+
+Question: even after the PipelineRun completion, describe pipelinerun does not show the value/valueFrom switch. Is that ok or should I run PipelineRunTerface.Update() in ReconcileKind after the first param source resolution?
+Example: updateLabelsAndAnnotations
+
+
+UpdateStatus is run automatically
+
+ResolvedPipelineTask contains a PipelineTask and its associated TaskRun(s) or CustomRuns, if they exist.
+
+
+Notes to PR:
+isDifferentFromDesiredStateOnlyByValueSourceResolutionInParams
+ - duplicity of code, I tried using generics but generic types don't have .DeepCopy()
+
+Is there a startegy for mocking? In ValidateParameters (taskrun_validation.go), ideally I should have wrote a test which chekcs that 
+the function ValidateValueAndValueSourceInEachParam is called (in python, this is a one-lier with the builtin unittest.mock library)
+
+requeue after: 27969h18m22.144989s
+ logger.go:146: 2025-03-11T14:13:32.087+0300	ERROR	TestReconcileRun_PatchTaskRunIfValueSourceResolved	taskrun/reconciler.go:295	Returned an error	{"targetMethod": "ReconcileKind", "error": "Operation cannot be fulfilled on taskruns.tekton.dev \"test-task-param-run-valuesource-patch\": resourceVersion mismatch, got: 00001, wanted: 00003"}
+
+
+ createParamSpecFromParam ... we can fix it later
