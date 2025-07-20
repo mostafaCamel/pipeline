@@ -165,6 +165,11 @@ func AddToInformer(t *testing.T, store cache.Store) func(ktesting.Action) (bool,
 			if err := store.Update(a.GetObject()); err != nil {
 				t.Fatal(err)
 			}
+		case ktesting.PatchActionImpl:
+			// 	ns := a.GetNamespace()
+			// 	name := a.GetName()
+			// 	store.Get()
+
 		}
 		return false, nil, nil
 	}

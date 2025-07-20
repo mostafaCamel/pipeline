@@ -746,10 +746,20 @@ func (c *Reconciler) patchTaskRunIfValueSourceResolved(ctx context.Context, tr *
 		return nil, fmt.Errorf("error getting TaskRun %s when patching TaskRun after value source resolution: %w", tr.Name, err)
 	}
 	if v1.IsDifferentOnlyByValueSourceResolution(tr.Spec.Params, baselineTr.Spec.Params) {
-		// Note that this uses Update vs. Patch because the former is significantly easier to test.
-		// If we want to switch this to Patch, then we will need to teach the utilities in test/controller.go
-		// to deal with Patch (setting resourceVersion, and optimistic concurrency checks).
-		// The method *TaskRunSpec.ValidateUpdate guards against other updates/patches once TaskRun has started
+		// Patch is preferred because PipelineRunSpecs are outside Status of PipelineRun so we want to be surgical
+		// about the change.
+		// The method *PipelineRunSpec.ValidateUpdate guards against other updates/patches once PipelineRun has started
+		// patchParamBytes, err := json.Marshal([]jsonpatch.JsonPatchOperation{
+		// 	{
+		// 		Operation: "replace",
+		// 		Path:      "/spec/params",
+		// 		Value:     tr.Spec.Params,
+		// 	},
+		// })
+		// if err != nil {
+		// 	return nil, fmt.Errorf("failed to marshal Params patch bytes: %w", err)
+		// }
+		// return c.PipelineClientSet.TektonV1().TaskRuns(tr.Namespace).Patch(ctx, tr.Name, types.JSONPatchType, patchParamBytes, metav1.PatchOptions{}, "")
 		return c.PipelineClientSet.TektonV1().TaskRuns(tr.Namespace).Update(ctx, tr.DeepCopy(), metav1.UpdateOptions{})
 	}
 	return tr, nil
